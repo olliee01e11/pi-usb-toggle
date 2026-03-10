@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Raspberry Pi 4B USB Control API
-Manages USB hub power on/off via sysfs
+Manages USB hub power on/off via uhubctl
 """
 
 from flask import Flask, jsonify, request
@@ -10,98 +10,85 @@ import subprocess
 import os
 import json
 from pathlib import Path
+import re
 
 app = Flask(__name__)
 CORS(app)
 
-# USB device paths (Pi 4B USB hub)
+# USB hubs controlled by uhubctl
+# Format: {device_id: (uhubctl_hub_number, hub_name)}
 USB_DEVICES = {
-    "usb1": {"path": "/sys/bus/usb/devices/usb1", "name": "USB 2.0 Hub (Top)"},
-    "usb2": {"path": "/sys/bus/usb/devices/usb2", "name": "USB 3.0 Hub"},
+    "usb1": {"hub": "1", "name": "USB 2.0 Hub (Top)"},
+    "usb2": {"hub": "2", "name": "USB 3.0 Hub"},
 }
 
 def get_usb_status(device_id):
-    """Get USB device power status"""
+    """Get USB hub power status using uhubctl"""
     try:
         device = USB_DEVICES.get(device_id)
         if not device:
             return None
         
-        # Check runtime_status first (most accurate indicator of actual power)
-        runtime_status_path = os.path.join(device["path"], "power/runtime_status")
-        if os.path.exists(runtime_status_path):
-            with open(runtime_status_path, 'r') as f:
-                runtime_status = f.read().strip()
-                # Map runtime status to on/off
-                if "suspend" in runtime_status.lower():
-                    return "off"
-                elif "active" in runtime_status.lower():
-                    return "on"
-                else:
-                    return runtime_status
+        # Run uhubctl to get hub status
+        result = subprocess.run(
+            ["sudo", "-n", "uhubctl", "-l", device["hub"]],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
         
-        # Fallback to control file
-        control_path = os.path.join(device["path"], "power/control")
-        if os.path.exists(control_path):
-            with open(control_path, 'r') as f:
-                status = f.read().strip()
-                return status
+        if result.returncode != 0:
+            return "error"
         
-        # Check if device is bound
-        driver_path = os.path.join(device["path"], "driver")
-        is_bound = os.path.exists(driver_path)
+        # Parse uhubctl output to find port power status
+        # Look for "Port X: 02a0 power" (on) or "Port X: 0000 off" (off)
+        output = result.stdout
         
-        return "on" if is_bound else "off"
+        # Extract all port status lines
+        port_lines = [line.strip() for line in output.split('\n') if line.strip().startswith('Port')]
+        
+        if not port_lines:
+            return "error"
+        
+        # Check if ANY port is powered off
+        for port_line in port_lines:
+            if "0000 off" in port_line:
+                return "off"
+        
+        # All ports are powered on
+        return "on"
+    except subprocess.TimeoutExpired:
+        return "error"
     except Exception as e:
-        return f"error: {str(e)}"
+        return "error"
 
 def set_usb_power(device_id, state):
-    """Enable/disable USB device via power control"""
+    """Enable/disable USB hub via uhubctl"""
     try:
         device = USB_DEVICES.get(device_id)
         if not device:
             return False, "Device not found"
         
-        power_path = os.path.join(device["path"], "power/control")
-        if os.path.exists(power_path):
-            try:
-                # Use shell with sudo for write operations
-                if state:
-                    # Turn ON: set control to "on" (always powered)
-                    value = "on"
-                else:
-                    # Turn OFF: set control to "auto" (allows autosuspend)
-                    value = "auto"
-                
-                result = subprocess.run(
-                    ["sudo", "-n", "bash", "-c", f"echo {value} > {power_path}"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5
-                )
-                
-                if result.returncode == 0:
-                    return True, f"Device {device_id} turned {'on' if state else 'off'}"
-                else:
-                    error_msg = result.stderr.strip() if result.stderr else "Unknown error"
-                    # If sudo requires password, try direct write as fallback
-                    if "password" in error_msg.lower():
-                        try:
-                            with open(power_path, 'w') as f:
-                                f.write(value)
-                            return True, f"Device {device_id} turned {'on' if state else 'off'}"
-                        except PermissionError:
-                            return False, "Permission denied. No sudo NOPASSWD configured."
-                    return False, f"Control failed: {error_msg}"
-            except subprocess.TimeoutExpired:
-                return False, "Control operation timed out"
-            except Exception as e:
-                return False, f"Control error: {str(e)}"
+        # Use uhubctl to control power
+        action = "on" if state else "off"
         
-        return False, "USB power control not supported on this device"
+        result = subprocess.run(
+            ["sudo", "-n", "uhubctl", "-l", device["hub"], "-a", action],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
         
+        if result.returncode == 0:
+            return True, f"Device {device_id} turned {action}"
+        else:
+            error_msg = result.stderr.strip() if result.stderr else "Unknown error"
+            return False, f"Control failed: {error_msg}"
+    
+    except subprocess.TimeoutExpired:
+        return False, "Control operation timed out"
     except Exception as e:
-        return False, f"Error: {str(e)}"
+        return False, f"Control error: {str(e)}"
 
 @app.route('/api/health', methods=['GET'])
 def health():
