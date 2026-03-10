@@ -52,33 +52,34 @@ def set_usb_power(device_id, state):
         power_path = os.path.join(device["path"], "power/control")
         if os.path.exists(power_path):
             try:
-                # Requires root
-                with open(power_path, 'w') as f:
-                    f.write("on" if state else "off")
-                return True, f"Device {device_id} turned {'on' if state else 'off'}"
-            except PermissionError:
-                return False, "Permission denied. Run with sudo or add udev rules."
+                # Use shell with sudo for write operations
+                # Valid values: "auto" (can autosuspend), "on" (always on)
+                value = "on" if state else "auto"
+                result = subprocess.run(
+                    ["sudo", "-n", "bash", "-c", f"echo {value} > {power_path}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if result.returncode == 0:
+                    return True, f"Device {device_id} turned {'on' if state else 'off'}"
+                else:
+                    error_msg = result.stderr.strip() if result.stderr else "Unknown error"
+                    # If sudo requires password, try direct write as fallback
+                    if "password" in error_msg.lower():
+                        try:
+                            with open(power_path, 'w') as f:
+                                f.write(value)
+                            return True, f"Device {device_id} turned {'on' if state else 'off'}"
+                        except PermissionError:
+                            return False, "Permission denied. No sudo NOPASSWD configured."
+                    return False, f"Control failed: {error_msg}"
+            except subprocess.TimeoutExpired:
+                return False, "Control operation timed out"
+            except Exception as e:
+                return False, f"Control error: {str(e)}"
         
-        # Fallback: unbind/bind device
-        bind_path = os.path.join(device["path"], "driver/unbind")
-        if state and os.path.exists(bind_path):
-            # Try to rebind
-            try:
-                subprocess.run(["bash", "-c", f"echo {device_id} > /sys/bus/usb/drivers/usb/bind"], 
-                             check=True, capture_output=True)
-                return True, f"Device {device_id} turned on"
-            except:
-                pass
-        elif not state and os.path.exists(bind_path):
-            # Unbind device
-            try:
-                subprocess.run(["bash", "-c", f"echo {device_id} > /sys/bus/usb/drivers/usb/unbind"], 
-                             check=True, capture_output=True)
-                return True, f"Device {device_id} turned off"
-            except:
-                pass
-        
-        return False, "Unable to control device - try running with sudo"
+        return False, "USB power control not supported on this device"
         
     except Exception as e:
         return False, f"Error: {str(e)}"
