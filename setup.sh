@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Pi USB Toggle - Helper Script
+# Pi USB Toggle - Helper Script (Updated)
 
 echo "🍓 Raspberry Pi USB Control Setup"
 echo "=================================="
@@ -12,19 +12,15 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-# Install backend dependencies
+# Setup Python virtual environment
 echo ""
-echo "📦 Installing backend dependencies..."
-cd backend
-pip install -r requirements.txt
-cd ..
+echo "📦 Setting up Python virtual environment..."
+python3 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r backend/requirements.txt
 
-# Check if Node.js is installed
-if ! command -v node &> /dev/null; then
-    echo "⚠️  Node.js is not installed"
-    echo "Please install Node.js first: https://nodejs.org/"
-    exit 1
-fi
+echo "✅ Python environment ready"
 
 # Install frontend dependencies
 echo ""
@@ -37,7 +33,7 @@ echo ""
 echo "✅ Setup complete!"
 echo ""
 echo "📝 Quick Start:"
-echo "  1. Backend: sudo python3 backend/app.py"
-echo "  2. Frontend: cd frontend && npm run dev"
+echo "  1. Backend: cd /home/hpi/pi-usb-toggle && source venv/bin/activate && sudo python3 backend/app.py"
+echo "  2. Frontend (new terminal): cd /home/hpi/pi-usb-toggle/frontend && npm run dev"
 echo "  3. Open: http://localhost:3000"
 echo ""
