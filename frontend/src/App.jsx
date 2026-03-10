@@ -6,7 +6,13 @@ function App() {
   const [devices, setDevices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [apiUrl] = useState('http://localhost:5000');
+  // Use relative URL that works from any hostname/IP
+  const [apiUrl] = useState(() => {
+    const protocol = window.location.protocol;
+    const hostname = window.location.hostname;
+    const port = 5000;
+    return `${protocol}//${hostname}:${port}`;
+  });
 
   useEffect(() => {
     fetchDevices();
