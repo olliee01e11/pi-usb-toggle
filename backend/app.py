@@ -15,11 +15,12 @@ import re
 app = Flask(__name__)
 CORS(app)
 
-# USB hubs controlled by uhubctl
-# Format: {device_id: (uhubctl_hub_number, hub_name)}
+# Raspberry Pi 4B hardware quirk: 
+# All 4 USB ports (2.0 and 3.0) share the same power rail.
+# To cut power, we must turn off BOTH the USB 2.0 hub (1-1) and USB 3.0 hub (2).
+# They cannot be controlled individually for power.
 USB_DEVICES = {
-    "usb1": {"hub": "1", "name": "USB 2.0 Hub (Top)"},
-    "usb2": {"hub": "2", "name": "USB 3.0 Hub"},
+    "all_ports": {"hubs": ["1-1", "2"], "name": "All USB Ports (Pi 4B)"}
 }
 
 def get_usb_status(device_id):
@@ -29,9 +30,10 @@ def get_usb_status(device_id):
         if not device:
             return None
         
-        # Run uhubctl to get hub status
+        # Check hub "1" (root hub) because it is always present
+        # When we cut VBUS power, we turn off hub 1 port 1.
         result = subprocess.run(
-            ["sudo", "-n", "uhubctl", "-l", device["hub"]],
+            ["sudo", "-n", "uhubctl", "-l", "1"],
             capture_output=True,
             text=True,
             timeout=5
@@ -40,11 +42,7 @@ def get_usb_status(device_id):
         if result.returncode != 0:
             return "error"
         
-        # Parse uhubctl output to find port power status
-        # Look for "Port X: 02a0 power" (on) or "Port X: 0000 off" (off)
         output = result.stdout
-        
-        # Extract all port status lines
         port_lines = [line.strip() for line in output.split('\n') if line.strip().startswith('Port')]
         
         if not port_lines:
@@ -52,10 +50,9 @@ def get_usb_status(device_id):
         
         # Check if ANY port is powered off
         for port_line in port_lines:
-            if "0000 off" in port_line:
+            if "0000 off" in port_line or "0080 off" in port_line:
                 return "off"
         
-        # All ports are powered on
         return "on"
     except subprocess.TimeoutExpired:
         return "error"
@@ -63,27 +60,42 @@ def get_usb_status(device_id):
         return "error"
 
 def set_usb_power(device_id, state):
-    """Enable/disable USB hub via uhubctl"""
+    """Enable/disable USB hubs via uhubctl"""
     try:
         device = USB_DEVICES.get(device_id)
         if not device:
             return False, "Device not found"
         
-        # Use uhubctl to control power
-        action = "on" if state else "off"
+        # Pi 4B requires a specific sequence to toggle VBUS power
+        success = True
         
-        result = subprocess.run(
-            ["sudo", "-n", "uhubctl", "-l", device["hub"], "-a", action],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        
-        if result.returncode == 0:
-            return True, f"Device {device_id} turned {action}"
+        if state:
+            # Turn ON sequence
+            # 1. Turn on hub 1 (root hub)
+            # 2. Turn on hub 2 (USB 3.0)
+            # 3. Wait a moment then ensure hub 1-1 (USB 2.0) is on
+            commands = [
+                ["sudo", "-n", "uhubctl", "-l", "1", "-a", "on"],
+                ["sudo", "-n", "uhubctl", "-l", "2", "-a", "on"]
+            ]
+            for cmd in commands:
+                subprocess.run(cmd, capture_output=True, timeout=5)
+            
+            # Hub 1-1 usually comes up automatically after hub 1, but just to be sure:
+            subprocess.run(["sudo", "-n", "uhubctl", "-l", "1-1", "-a", "on"], capture_output=True, timeout=5)
+            
         else:
-            error_msg = result.stderr.strip() if result.stderr else "Unknown error"
-            return False, f"Control failed: {error_msg}"
+            # Turn OFF sequence
+            # Turn off 2, 1-1, and 1 to guarantee VBUS goes dark
+            commands = [
+                ["sudo", "-n", "uhubctl", "-l", "2", "-a", "off"],
+                ["sudo", "-n", "uhubctl", "-l", "1-1", "-a", "off"],
+                ["sudo", "-n", "uhubctl", "-l", "1", "-a", "off"]
+            ]
+            for cmd in commands:
+                subprocess.run(cmd, capture_output=True, timeout=5)
+        
+        return True, f"All USB ports turned {'on' if state else 'off'}"
     
     except subprocess.TimeoutExpired:
         return False, "Control operation timed out"
