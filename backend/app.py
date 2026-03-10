@@ -27,9 +27,23 @@ def get_usb_status(device_id):
         if not device:
             return None
         
-        power_path = os.path.join(device["path"], "power/control")
-        if os.path.exists(power_path):
-            with open(power_path, 'r') as f:
+        # Check runtime_status first (most accurate indicator of actual power)
+        runtime_status_path = os.path.join(device["path"], "power/runtime_status")
+        if os.path.exists(runtime_status_path):
+            with open(runtime_status_path, 'r') as f:
+                runtime_status = f.read().strip()
+                # Map runtime status to on/off
+                if "suspend" in runtime_status.lower():
+                    return "off"
+                elif "active" in runtime_status.lower():
+                    return "on"
+                else:
+                    return runtime_status
+        
+        # Fallback to control file
+        control_path = os.path.join(device["path"], "power/control")
+        if os.path.exists(control_path):
+            with open(control_path, 'r') as f:
                 status = f.read().strip()
                 return status
         
@@ -48,19 +62,24 @@ def set_usb_power(device_id, state):
         if not device:
             return False, "Device not found"
         
-        # Try power/control method (preferred)
         power_path = os.path.join(device["path"], "power/control")
         if os.path.exists(power_path):
             try:
                 # Use shell with sudo for write operations
-                # Valid values: "auto" (can autosuspend), "on" (always on)
-                value = "on" if state else "auto"
+                if state:
+                    # Turn ON: set control to "on" (always powered)
+                    value = "on"
+                else:
+                    # Turn OFF: set control to "auto" (allows autosuspend)
+                    value = "auto"
+                
                 result = subprocess.run(
                     ["sudo", "-n", "bash", "-c", f"echo {value} > {power_path}"],
                     capture_output=True,
                     text=True,
                     timeout=5
                 )
+                
                 if result.returncode == 0:
                     return True, f"Device {device_id} turned {'on' if state else 'off'}"
                 else:
