@@ -124,6 +124,9 @@ function App() {
 
       <footer className="footer">
         <small>Pi USB Toggle • Requires sudo to control USB devices</small>
+        <div style={{marginTop: '8px'}}>
+          <a href="/shortcuts/pi-usb-toggle-shortcuts.zip" className="download-link">Download Shortcuts Pack</a>
+        </div>
       </footer>
     </div>
   );
